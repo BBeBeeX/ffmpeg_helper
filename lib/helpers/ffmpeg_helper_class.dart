@@ -198,7 +198,7 @@ class FFMpegHelper {
             double.tryParse(temp['fps']) ?? 0.0,
             double.tryParse(temp['stream_0_0_q']) ?? 0.0,
             int.tryParse(temp['total_size']) ?? 0,
-            int.tryParse(temp['out_time_us']) ?? 0,
+            double.tryParse(temp['out_time_us']) ?? 0,
             // 2189.6kbits/s => 2189.6
             double.tryParse(
                     temp['bitrate']?.replaceAll(RegExp('[a-z/]'), '')) ??
@@ -310,7 +310,10 @@ class FFMpegHelper {
       '-show_streams',
       '-show_chapters',
       filePath,
-    ]);
+    ],
+        stdoutEncoding:utf8,
+        stderrEncoding:utf8
+    );
     if (result.stdout == null ||
         result.stdout is! String ||
         (result.stdout as String).isEmpty) {

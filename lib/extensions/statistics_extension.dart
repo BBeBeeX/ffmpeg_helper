@@ -3,7 +3,7 @@ import 'package:ffmpeg_helper/ffmpeg_helper.dart';
 extension OnStatistics on Statistics {
   /// get time by duration
   Duration getTimeDuration() {
-    return Duration(microseconds: getTime());
+    return Duration(microseconds: getTime().round());
   }
 
   /// get time by milliseconds
