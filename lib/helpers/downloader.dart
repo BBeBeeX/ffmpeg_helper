@@ -137,7 +137,7 @@ class Downloader {
             params.progressPort.send({
               'type': 'progress',
               'index': params.index,
-              'received': downloadedBytes,
+              'received': received,
             });
           },
         );
