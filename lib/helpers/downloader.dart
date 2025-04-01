@@ -95,18 +95,15 @@ class Downloader {
     int attempt = 0;
 
     File file = File(params.filePath);
-    int downloadedBytes = file.existsSync() ? file.lengthSync() : 0; // 已下载字节数
+    int downloadedBytes = file.existsSync() ? file.lengthSync() : 0;
     int totalBytes = params.end - params.start + 1;
 
     while (attempt < maxRetries) {
       Timer? timeoutTimer;
-      Dio dio = Dio();
       try {
         timeoutTimer = Timer(Duration(seconds: 10), () {
-          print(
-              "Timeout reached for range ${params.start}-${params.end}, retrying...");
           throw TimeoutException(
-              "Download stalled for range ${params.start}-${params.end}");
+              "Download stalled for range ${params.start}-${params.end}, retrying...");
         });
 
         if (downloadedBytes >= totalBytes) {
@@ -115,10 +112,7 @@ class Downloader {
           break;
         }
 
-        print(
-            "Resuming download from byte $downloadedBytes for range ${params.start}-${params.end}");
-
-        await dio.download(
+        await Dio().download(
           params.url,
           params.filePath,
           options: Options(
@@ -133,7 +127,6 @@ class Downloader {
               throw TimeoutException("Download stalled");
             });
 
-            downloadedBytes += received;
             params.progressPort.send({
               'type': 'progress',
               'index': params.index,
