@@ -93,9 +93,20 @@ class Downloader {
     bool success = false;
     int maxRetries = 10;
     int attempt = 0;
+    Timer? timeoutTimer;
 
     while (attempt < maxRetries) {
       try {
+        Completer<void> completer = Completer<void>();
+        timeoutTimer = Timer(Duration(seconds: 10), () {
+          if (!completer.isCompleted) {
+            print(
+                "Timeout reached for range ${params.start}-${params.end}, retrying...");
+            completer.completeError(TimeoutException(
+                "Download stalled for range ${params.start}-${params.end}"));
+          }
+        });
+
         await Dio().download(
           params.url,
           params.filePath,
@@ -103,6 +114,14 @@ class Downloader {
           options: Options(
               headers: {"Range": "bytes=${params.start}-${params.end}"}),
           onReceiveProgress: (received, total) {
+            timeoutTimer?.cancel(); // 取消之前的超时计时
+            timeoutTimer = Timer(Duration(seconds: 10), () {
+              if (!completer.isCompleted) {
+                print("Timeout reached, retrying...");
+                completer.completeError(TimeoutException("Download stalled"));
+              }
+            });
+
             params.progressPort.send({
               'type': 'progress',
               'index': params.index,
@@ -110,12 +129,15 @@ class Downloader {
             });
           },
         );
+
         success = true;
+        timeoutTimer?.cancel();
         break;
       } catch (e) {
         attempt++;
         print(
             "Chunk download failed for range ${params.start}-${params.end}: $e");
+
         if (attempt >= maxRetries) {
           print("Max retries reached for range ${params.start}-${params.end}");
           success = false;
@@ -123,6 +145,8 @@ class Downloader {
           print("Retrying... Attempt $attempt of $maxRetries");
           await Future.delayed(Duration(seconds: 1));
         }
+      } finally {
+        timeoutTimer?.cancel();
       }
     }
 

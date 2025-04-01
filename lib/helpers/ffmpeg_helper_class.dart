@@ -422,6 +422,7 @@ class FFMpegHelper {
       final File tempZipFile = File(ffmpegZipPath);
       if (await tempZipFile.exists() == false) {
         try {
+          deleteTempFiles(_tempFolderPath!);
           final isSuccess = await Downloader.multiThreadDownload(
             url: _ffmpegUrl,
             savePath: ffmpegZipPath,
