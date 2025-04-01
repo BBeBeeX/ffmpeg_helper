@@ -1,4 +1,6 @@
+import 'dart:async';
 import 'dart:io';
+import 'dart:isolate';
 
 import 'package:dio/dio.dart';
 
@@ -18,8 +20,18 @@ class Downloader {
       }
 
       int chunkSize = (fileSize / threadCount).ceil();
-      List<Future> futures = [];
+      List<Future<bool>> futures = [];
       List<File> tempFiles = [];
+
+      final progressReceivePort = ReceivePort();
+      int totalReceived = 0;
+
+      progressReceivePort.listen((message) {
+        if (message is Map && message['type'] == 'progress') {
+          totalReceived += message['received'] as int;
+          onProgress?.call(totalReceived, fileSize);
+        }
+      });
 
       for (int i = 0; i < threadCount; i++) {
         int start = i * chunkSize;
@@ -29,19 +41,25 @@ class Downloader {
         String tempFilePath = "$savePath.part$i";
         tempFiles.add(File(tempFilePath));
 
-        futures.add(_downloadChunk(
-          url,
-          tempFilePath,
-          start,
-          end,
-          fileSize,
-          onProgress,
-          queryParameters,
-          cancelToken,
+        futures.add(_downloadChunkWithIsolate(
+          DownloadChunkParams(
+            url: url,
+            filePath: tempFilePath,
+            start: start,
+            end: end,
+            fileSize: fileSize,
+            progressPort: progressReceivePort.sendPort,
+            queryParameters: queryParameters,
+          ),
         ));
       }
 
-      await Future.wait(futures);
+      List<bool> results = await Future.wait(futures);
+      progressReceivePort.close();
+
+      if (results.contains(false)) {
+        throw Exception('Some chunks failed to download');
+      }
 
       return await _mergeFiles(tempFiles, savePath);
     } catch (e, stackTrace) {
@@ -51,36 +69,45 @@ class Downloader {
     }
   }
 
-  /// 单独处理每个分片下载，避免 Dio 失败时影响整个流程
-  static Future<void> _downloadChunk(
-    String url,
-    String filePath,
-    int start,
-    int end,
-    int fileSize,
-    void Function(int received, int total)? onProgress,
-    Map<String, dynamic>? queryParameters,
-    CancelToken? cancelToken,
-  ) async {
+  /// 使用 Isolate 下载单个分片
+  static Future<bool> _downloadChunkWithIsolate(
+      DownloadChunkParams params) async {
+    final receivePort = ReceivePort();
+    await Isolate.spawn(_isolateDownloadChunk, [receivePort.sendPort, params]);
+
+    final result = await receivePort.first as bool;
+    receivePort.close();
+    return result;
+  }
+
+  /// Isolate 中执行的下载任务
+  static void _isolateDownloadChunk(List<dynamic> args) async {
+    SendPort sendPort = args[0] as SendPort;
+    DownloadChunkParams params = args[1] as DownloadChunkParams;
+
+    bool success = false;
     try {
-      Dio dio = Dio();
-      await dio.download(
-        url,
-        filePath,
-        options: Options(headers: {"Range": "bytes=$start-$end"}),
-        queryParameters: queryParameters, // 添加查询参数
-        cancelToken: cancelToken, // 添加取消支持
+      await Dio().download(
+        params.url,
+        params.filePath,
+        options:
+            Options(headers: {"Range": "bytes=${params.start}-${params.end}"}),
+        queryParameters: params.queryParameters,
         onReceiveProgress: (received, total) {
-          onProgress?.call(received, fileSize);
+          params.progressPort.send({
+            'type': 'progress',
+            'received': received,
+          });
         },
       );
+      success = true;
     } catch (e) {
-      if (e is DioException && CancelToken.isCancel(e)) {
-        print("Download canceled for range $start-$end");
-      } else {
-        print("Chunk download failed for range $start-$end: $e");
-        throw Exception("Download chunk failed for range $start-$end");
-      }
+      print(
+          "Chunk download failed for range ${params.start}-${params.end}: $e");
+      success = false;
+    } finally {
+      sendPort.send(success);
+      Isolate.exit(sendPort, success);
     }
   }
 
@@ -91,8 +118,12 @@ class Downloader {
       File finalFile = File(finalPath);
       IOSink sink = finalFile.openWrite(mode: FileMode.write);
       for (var tempFile in tempFiles) {
-        await sink.addStream(tempFile.openRead());
-        await tempFile.delete();
+        if (await tempFile.exists()) {
+          await sink.addStream(tempFile.openRead());
+          await tempFile.delete();
+        } else {
+          throw Exception('Temporary file does not exist: ${tempFile.path}');
+        }
       }
       await sink.close();
       return true;
@@ -116,4 +147,25 @@ class Downloader {
       return 0;
     }
   }
+}
+
+/// 用于传递下载参数到 Isolate 的类
+class DownloadChunkParams {
+  final String url;
+  final String filePath;
+  final int start;
+  final int end;
+  final int fileSize;
+  final SendPort progressPort;
+  final Map<String, dynamic>? queryParameters;
+
+  DownloadChunkParams({
+    required this.url,
+    required this.filePath,
+    required this.start,
+    required this.end,
+    required this.fileSize,
+    required this.progressPort,
+    this.queryParameters,
+  });
 }
