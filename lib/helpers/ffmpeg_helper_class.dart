@@ -10,6 +10,7 @@ import 'package:path/path.dart' as path;
 import 'package:path_provider/path_provider.dart';
 
 import '../ffmpeg_helper.dart';
+import 'downloader.dart';
 
 class FFMpegHelper {
   static final FFMpegHelper _singleton = FFMpegHelper._internal();
@@ -301,19 +302,20 @@ class FFMpegHelper {
     if (((_ffmpegBinDirectory != null) && (Platform.isWindows))) {
       ffprobe = path.join(_ffmpegBinDirectory!, "ffprobe.exe");
     }
-    final result = await Process.run(ffprobe, [
-      '-v',
-      'quiet',
-      '-print_format',
-      'json',
-      '-show_format',
-      '-show_streams',
-      '-show_chapters',
-      filePath,
-    ],
-        stdoutEncoding:utf8,
-        stderrEncoding:utf8
-    );
+    final result = await Process.run(
+        ffprobe,
+        [
+          '-v',
+          'quiet',
+          '-print_format',
+          'json',
+          '-show_format',
+          '-show_streams',
+          '-show_chapters',
+          filePath,
+        ],
+        stdoutEncoding: utf8,
+        stderrEncoding: utf8);
     if (result.stdout == null ||
         result.stdout is! String ||
         (result.stdout as String).isEmpty) {
@@ -398,6 +400,7 @@ class FFMpegHelper {
     return session;
   }
 
+  int times = 0;
   Future<bool> setupFFMpegOnWindows({
     CancelToken? cancelToken,
     void Function(FFMpegProgress progress)? onProgress,
@@ -419,12 +422,11 @@ class FFMpegHelper {
       final File tempZipFile = File(ffmpegZipPath);
       if (await tempZipFile.exists() == false) {
         try {
-          Dio dio = Dio();
-          Response response = await dio.download(
-            _ffmpegUrl,
-            ffmpegZipPath,
-            cancelToken: cancelToken,
-            onReceiveProgress: (int received, int total) {
+          final isSuccess = await Downloader.multiThreadDownload(
+            url: _ffmpegUrl,
+            savePath: ffmpegZipPath,
+            threadCount: 4,
+            onProgress: (received, total) {
               onProgress?.call(FFMpegProgress(
                 downloaded: received,
                 fileSize: total,
@@ -432,8 +434,10 @@ class FFMpegHelper {
               ));
             },
             queryParameters: queryParameters,
+            cancelToken: cancelToken,
           );
-          if (response.statusCode == HttpStatus.ok) {
+
+          if (isSuccess) {
             onProgress?.call(FFMpegProgress(
               downloaded: 0,
               fileSize: 0,
@@ -463,7 +467,16 @@ class FFMpegHelper {
             fileSize: 0,
             phase: FFMpegProgressPhase.inactive,
           ));
-          return false;
+          await tempZipFile.delete();
+          times++;
+          if (times < 5) {
+            return setupFFMpegOnWindows(
+                cancelToken: cancelToken,
+                onProgress: onProgress,
+                queryParameters: queryParameters);
+          } else {
+            return false;
+          }
         }
       } else {
         onProgress?.call(FFMpegProgress(
@@ -488,7 +501,16 @@ class FFMpegHelper {
             fileSize: 0,
             phase: FFMpegProgressPhase.inactive,
           ));
-          return false;
+          await tempZipFile.delete();
+          times++;
+          if (times < 5) {
+            return setupFFMpegOnWindows(
+                cancelToken: cancelToken,
+                onProgress: onProgress,
+                queryParameters: queryParameters);
+          } else {
+            return false;
+          }
         }
       }
     } else {
