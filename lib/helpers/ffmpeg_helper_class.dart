@@ -467,7 +467,7 @@ class FFMpegHelper {
             fileSize: 0,
             phase: FFMpegProgressPhase.inactive,
           ));
-          await tempZipFile.delete();
+          deleteTempFiles(_tempFolderPath!);
           times++;
           if (times < 5) {
             return setupFFMpegOnWindows(
@@ -501,7 +501,7 @@ class FFMpegHelper {
             fileSize: 0,
             phase: FFMpegProgressPhase.inactive,
           ));
-          await tempZipFile.delete();
+          deleteTempFiles(_tempFolderPath!);
           times++;
           if (times < 5) {
             return setupFFMpegOnWindows(
@@ -520,6 +520,26 @@ class FFMpegHelper {
         phase: FFMpegProgressPhase.inactive,
       ));
       return true;
+    }
+  }
+
+  Future<void> deleteTempFiles(String tempFolderPath) async {
+    final directory = Directory(tempFolderPath);
+
+    if (await directory.exists()) {
+      try {
+        await for (var entity in directory.list()) {
+          if (entity is File) {
+            await entity.delete();
+            print('Deleted file: ${entity.path}');
+          }
+        }
+        print('All files deleted in $tempFolderPath');
+      } catch (e) {
+        print('Error deleting files: $e');
+      }
+    } else {
+      print('Directory does not exist: $tempFolderPath');
     }
   }
 }
