@@ -91,30 +91,43 @@ class Downloader {
     DownloadChunkParams params = args[1] as DownloadChunkParams;
 
     bool success = false;
-    try {
-      await Dio().download(
-        params.url,
-        params.filePath,
-        queryParameters: params.queryParameters,
-        options:
-            Options(headers: {"Range": "bytes=${params.start}-${params.end}"}),
-        onReceiveProgress: (received, total) {
-          params.progressPort.send({
-            'type': 'progress',
-            'index': params.index,
-            'received': received,
-          });
-        },
-      );
-      success = true;
-    } catch (e) {
-      print(
-          "Chunk download failed for range ${params.start}-${params.end}: $e");
-      success = false;
-    } finally {
-      sendPort.send(success);
-      Isolate.exit(sendPort, success);
+    int maxRetries = 10;
+    int attempt = 0;
+
+    while (attempt < maxRetries) {
+      try {
+        await Dio().download(
+          params.url,
+          params.filePath,
+          queryParameters: params.queryParameters,
+          options: Options(
+              headers: {"Range": "bytes=${params.start}-${params.end}"}),
+          onReceiveProgress: (received, total) {
+            params.progressPort.send({
+              'type': 'progress',
+              'index': params.index,
+              'received': received,
+            });
+          },
+        );
+        success = true;
+        break;
+      } catch (e) {
+        attempt++;
+        print(
+            "Chunk download failed for range ${params.start}-${params.end}: $e");
+        if (attempt >= maxRetries) {
+          print("Max retries reached for range ${params.start}-${params.end}");
+          success = false;
+        } else {
+          print("Retrying... Attempt $attempt of $maxRetries");
+          await Future.delayed(Duration(seconds: 1));
+        }
+      }
     }
+
+    sendPort.send(success);
+    Isolate.exit(sendPort, success);
   }
 
   static Future<bool> _mergeFiles(
