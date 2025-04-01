@@ -8,7 +8,7 @@ class Downloader {
   static Future<bool> multiThreadDownload({
     required String url,
     required String savePath,
-    int threadCount = 8,
+    int threadCount = 16,
     void Function(int received, int total)? onProgress,
     Map<String, dynamic>? queryParameters,
     CancelToken? cancelToken,
@@ -139,17 +139,32 @@ class Downloader {
   }
 
   static Future<int> getFileSize(
-      String url, Map<String, dynamic>? queryParameters) async {
-    try {
-      Dio dio = Dio();
-      Response response = await dio.head(url, queryParameters: queryParameters);
-      return int.tryParse(
-              response.headers.value(HttpHeaders.contentLengthHeader) ?? '0') ??
-          0;
-    } catch (e) {
-      print("Failed to get file size: $e");
-      return 0;
+      String url, Map<String, dynamic>? queryParameters,
+      {int maxRetries = 3,
+      Duration retryDelay = const Duration(seconds: 2)}) async {
+    Dio dio = Dio();
+    int attempt = 0;
+
+    while (attempt < maxRetries) {
+      try {
+        Response response =
+            await dio.head(url, queryParameters: queryParameters);
+        return int.tryParse(
+                response.headers.value(HttpHeaders.contentLengthHeader) ??
+                    '0') ??
+            0;
+      } catch (e) {
+        attempt++;
+        print("Attempt $attempt: Failed to get file size: $e");
+        if (attempt >= maxRetries) {
+          throw Exception(
+              'Failed to retrieve file size after $maxRetries attempts.');
+        }
+        await Future.delayed(retryDelay);
+      }
     }
+
+    return 0;
   }
 }
 
