@@ -135,7 +135,12 @@ class Downloader {
           completer.complete();
         }
 
-        await completer.future;
+        try {
+          await completer.future;
+        } catch (e) {
+          throw e;
+        }
+
         success = true;
         break;
       } catch (e) {
