@@ -103,7 +103,7 @@ class Downloader {
       Completer<void> downloadCompleter = Completer<void>();
 
       try {
-        timeoutTimer = Timer(Duration(seconds: 10), () {
+        timeoutTimer = Timer(Duration(seconds: 20), () {
           if (!downloadCompleter.isCompleted) {
             downloadCompleter.completeError(TimeoutException(
                 "Download stalled for range ${params.start}-${params.end}, retrying..."));
@@ -126,7 +126,7 @@ class Downloader {
           ),
           onReceiveProgress: (received, total) {
             timeoutTimer?.cancel();
-            timeoutTimer = Timer(Duration(seconds: 10), () {
+            timeoutTimer = Timer(Duration(seconds: 20), () {
               if (!downloadCompleter.isCompleted) {
                 downloadCompleter
                     .completeError(TimeoutException("Download stalled"));
