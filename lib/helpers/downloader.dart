@@ -93,100 +93,67 @@ class Downloader {
     bool success = false;
     int maxRetries = 10;
     int attempt = 0;
-    int downloadedBytes = 0;
-    int startByte = params.start;
+
+    File file = File(params.filePath);
+    int downloadedBytes = file.existsSync() ? file.lengthSync() : 0; // 已下载字节数
+    int totalBytes = params.end - params.start + 1;
 
     while (attempt < maxRetries) {
       Timer? timeoutTimer;
-
+      Dio dio = Dio();
       try {
-        int currentStart = startByte + downloadedBytes;
-
-        print(
-            "Downloading range ${currentStart}-${params.end}, attempt ${attempt + 1}/${maxRetries}");
-
-        bool isStalled = false;
         timeoutTimer = Timer(Duration(seconds: 10), () {
-          isStalled = true;
           print(
-              "Timeout reached for range ${currentStart}-${params.end}, will resume from current position");
+              "Timeout reached for range ${params.start}-${params.end}, retrying...");
+          throw TimeoutException(
+              "Download stalled for range ${params.start}-${params.end}");
         });
 
-        File file = File(params.filePath);
-        IOSink? sink;
-        if (downloadedBytes == 0) {
-          sink = file.openWrite(mode: FileMode.write);
-        } else {
-          sink = file.openWrite(mode: FileMode.append);
+        if (downloadedBytes >= totalBytes) {
+          print("Chunk already fully downloaded: ${params.filePath}");
+          success = true;
+          break;
         }
-
-        try {
-          final response = await Dio().get(
-            params.url,
-            queryParameters: params.queryParameters,
-            options: Options(
-              headers: {"Range": "bytes=${currentStart}-${params.end}"},
-              responseType: ResponseType.stream,
-            ),
-          );
-
-          int receivedBytes = 0;
-          response.data.stream.listen(
-            (List<int> chunk) {
-              if (isStalled) {
-                throw TimeoutException("Download stalled");
-              }
-              timeoutTimer?.cancel();
-              timeoutTimer = Timer(Duration(seconds: 10), () {
-                isStalled = true;
-                print(
-                    "Download stalled for range ${currentStart}-${params.end}, will resume");
-              });
-              sink?.add(chunk);
-              receivedBytes += chunk.length;
-
-              params.progressPort.send({
-                'type': 'progress',
-                'index': params.index,
-                'received': downloadedBytes + receivedBytes,
-              });
-            },
-            onDone: () {
-              downloadedBytes += receivedBytes;
-              if (currentStart + receivedBytes >= params.end) {
-                success = true;
-              }
-            },
-            onError: (error) {
-              throw error;
-            },
-            cancelOnError: true,
-          );
-
-          await response.data.stream.drain();
-          await sink.flush();
-          await sink.close();
-
-          if (success) {
-            print("Download completed for range ${params.start}-${params.end}");
-            break;
-          }
-        } finally {
-          await sink.close();
-        }
-      } catch (e) {
-        attempt++;
 
         print(
-            "Chunk download interrupted for range ${startByte + downloadedBytes}-${params.end}: $e");
+            "Resuming download from byte $downloadedBytes for range ${params.start}-${params.end}");
+
+        await dio.download(
+          params.url,
+          params.filePath,
+          options: Options(
+            headers: {
+              "Range": "bytes=${params.start + downloadedBytes}-${params.end}"
+            },
+          ),
+          onReceiveProgress: (received, total) {
+            timeoutTimer?.cancel();
+            timeoutTimer = Timer(Duration(seconds: 10), () {
+              print("Timeout reached, retrying...");
+              throw TimeoutException("Download stalled");
+            });
+
+            downloadedBytes += received;
+            params.progressPort.send({
+              'type': 'progress',
+              'index': params.index,
+              'received': downloadedBytes,
+            });
+          },
+        );
+
+        success = true;
+        break;
+      } catch (e) {
+        attempt++;
+        print(
+            "Chunk download failed for range ${params.start}-${params.end}: $e");
 
         if (attempt >= maxRetries) {
           print("Max retries reached for range ${params.start}-${params.end}");
           success = false;
-          break;
         } else {
-          print(
-              "Resuming download... Attempt $attempt of $maxRetries from byte ${startByte + downloadedBytes}");
+          print("Retrying... Attempt $attempt of $maxRetries");
           await Future.delayed(Duration(seconds: 1));
         }
       } finally {
