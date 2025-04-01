@@ -93,11 +93,12 @@ class Downloader {
     bool success = false;
     int maxRetries = 10;
     int attempt = 0;
-    Timer? timeoutTimer;
 
     while (attempt < maxRetries) {
+      Completer<void> completer = Completer<void>();
+      Timer? timeoutTimer;
+
       try {
-        Completer<void> completer = Completer<void>();
         timeoutTimer = Timer(Duration(seconds: 10), () {
           if (!completer.isCompleted) {
             print(
@@ -114,7 +115,7 @@ class Downloader {
           options: Options(
               headers: {"Range": "bytes=${params.start}-${params.end}"}),
           onReceiveProgress: (received, total) {
-            timeoutTimer?.cancel(); // 取消之前的超时计时
+            timeoutTimer?.cancel();
             timeoutTimer = Timer(Duration(seconds: 10), () {
               if (!completer.isCompleted) {
                 print("Timeout reached, retrying...");
@@ -130,8 +131,12 @@ class Downloader {
           },
         );
 
+        if (!completer.isCompleted) {
+          completer.complete();
+        }
+
+        await completer.future;
         success = true;
-        timeoutTimer?.cancel();
         break;
       } catch (e) {
         attempt++;
