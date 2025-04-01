@@ -426,7 +426,7 @@ class FFMpegHelper {
           final isSuccess = await Downloader.multiThreadDownload(
             url: _ffmpegUrl,
             savePath: ffmpegZipPath,
-            threadCount: 32,
+            threadCount: 16,
             onProgress: (received, total) {
               onProgress?.call(FFMpegProgress(
                 downloaded: received,
