@@ -100,10 +100,14 @@ class Downloader {
 
     while (attempt < maxRetries) {
       Timer? timeoutTimer;
+      Completer<void> downloadCompleter = Completer<void>();
+
       try {
         timeoutTimer = Timer(Duration(seconds: 10), () {
-          throw TimeoutException(
-              "Download stalled for range ${params.start}-${params.end}, retrying...");
+          if (!downloadCompleter.isCompleted) {
+            downloadCompleter.completeError(TimeoutException(
+                "Download stalled for range ${params.start}-${params.end}, retrying..."));
+          }
         });
 
         if (downloadedBytes >= totalBytes) {
@@ -112,7 +116,7 @@ class Downloader {
           break;
         }
 
-        await Dio().download(
+        Dio().download(
           params.url,
           params.filePath,
           options: Options(
@@ -123,8 +127,10 @@ class Downloader {
           onReceiveProgress: (received, total) {
             timeoutTimer?.cancel();
             timeoutTimer = Timer(Duration(seconds: 10), () {
-              print("Timeout reached, retrying...");
-              throw TimeoutException("Download stalled");
+              if (!downloadCompleter.isCompleted) {
+                downloadCompleter
+                    .completeError(TimeoutException("Download stalled"));
+              }
             });
 
             params.progressPort.send({
@@ -133,8 +139,17 @@ class Downloader {
               'received': received,
             });
           },
-        );
+        ).then((_) {
+          if (!downloadCompleter.isCompleted) {
+            downloadCompleter.complete();
+          }
+        }).catchError((error) {
+          if (!downloadCompleter.isCompleted) {
+            downloadCompleter.completeError(error);
+          }
+        });
 
+        await downloadCompleter.future;
         success = true;
         break;
       } catch (e) {
