@@ -91,7 +91,7 @@ class Downloader {
     DownloadChunkParams params = args[1] as DownloadChunkParams;
 
     bool success = false;
-    int maxRetries = 10;
+    int maxRetries = 20;
     int attempt = 0;
 
     File file = File(params.filePath);
