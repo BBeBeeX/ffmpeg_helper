@@ -22,13 +22,19 @@ class Downloader {
       int chunkSize = (fileSize / threadCount).ceil();
       List<Future<bool>> futures = [];
       List<File> tempFiles = [];
+      Map<int, int> chunkReceived = {};
 
       final progressReceivePort = ReceivePort();
       int totalReceived = 0;
 
       progressReceivePort.listen((message) {
         if (message is Map && message['type'] == 'progress') {
-          totalReceived += message['received'] as int;
+          int chunkIndex = message['index'] as int;
+          int received = message['received'] as int;
+
+          chunkReceived[chunkIndex] = received;
+
+          totalReceived = chunkReceived.values.fold(0, (a, b) => a + b);
           onProgress?.call(totalReceived, fileSize);
         }
       });
@@ -49,6 +55,7 @@ class Downloader {
             end: end,
             fileSize: fileSize,
             progressPort: progressReceivePort.sendPort,
+            index: i,
             queryParameters: queryParameters,
           ),
         ));
@@ -69,7 +76,6 @@ class Downloader {
     }
   }
 
-  /// 使用 Isolate 下载单个分片
   static Future<bool> _downloadChunkWithIsolate(
       DownloadChunkParams params) async {
     final receivePort = ReceivePort();
@@ -80,7 +86,6 @@ class Downloader {
     return result;
   }
 
-  /// Isolate 中执行的下载任务
   static void _isolateDownloadChunk(List<dynamic> args) async {
     SendPort sendPort = args[0] as SendPort;
     DownloadChunkParams params = args[1] as DownloadChunkParams;
@@ -90,12 +95,13 @@ class Downloader {
       await Dio().download(
         params.url,
         params.filePath,
+        queryParameters: params.queryParameters,
         options:
             Options(headers: {"Range": "bytes=${params.start}-${params.end}"}),
-        queryParameters: params.queryParameters,
         onReceiveProgress: (received, total) {
           params.progressPort.send({
             'type': 'progress',
+            'index': params.index,
             'received': received,
           });
         },
@@ -111,7 +117,6 @@ class Downloader {
     }
   }
 
-  /// 合并多个分片到最终文件
   static Future<bool> _mergeFiles(
       List<File> tempFiles, String finalPath) async {
     try {
@@ -133,7 +138,6 @@ class Downloader {
     }
   }
 
-  /// 获取文件大小
   static Future<int> getFileSize(
       String url, Map<String, dynamic>? queryParameters) async {
     try {
@@ -149,7 +153,6 @@ class Downloader {
   }
 }
 
-/// 用于传递下载参数到 Isolate 的类
 class DownloadChunkParams {
   final String url;
   final String filePath;
@@ -158,6 +161,7 @@ class DownloadChunkParams {
   final int fileSize;
   final SendPort progressPort;
   final Map<String, dynamic>? queryParameters;
+  final int index;
 
   DownloadChunkParams({
     required this.url,
@@ -167,5 +171,6 @@ class DownloadChunkParams {
     required this.fileSize,
     required this.progressPort,
     this.queryParameters,
+    required this.index,
   });
 }
