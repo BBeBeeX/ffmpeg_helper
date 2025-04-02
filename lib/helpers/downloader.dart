@@ -166,7 +166,7 @@ class Downloader {
     DownloadChunkParams params = args[1] as DownloadChunkParams;
 
     bool success = false;
-    int maxRetries = 30;
+    int maxRetries = 50;
     int attempt = 0;
 
     // 初始文件状态检查
@@ -213,7 +213,6 @@ class Downloader {
         } catch (e) {
           print("Download chunk part failed: $e");
 
-          // Check for specific errors that might indicate temporary network issues
           String errorMsg = e.toString().toLowerCase();
           bool isNetworkError = errorMsg.contains('socket') ||
               errorMsg.contains('connection') ||
@@ -222,18 +221,13 @@ class Downloader {
               errorMsg.contains('stalled');
 
           if (isNetworkError) {
-            print("Network error detected, will retry");
-            throw e; // Rethrow to be caught by the outer try-catch
+            throw e;
           } else {
-            // For non-network errors, check if we made any progress
             File tempFile = File(tempFilePath);
             if (await tempFile.exists() && await tempFile.length() > 0) {
-              print("Download partially completed before error, will continue");
-              throw e; // Rethrow to be caught by the outer try-catch
+              throw e;
             } else {
-              // More serious error with no progress, consider a longer backoff
-              print("Serious error with no progress: $e");
-              throw e; // Rethrow with indication this is more serious
+              throw e;
             }
           }
         }
@@ -258,8 +252,7 @@ class Downloader {
               ? (attempt < 5 ? attempt * 2 : 10 + (attempt ~/ 2))
               : (attempt < 5 ? attempt : 5 + (attempt ~/ 5));
 
-          // Cap the maximum backoff at 60 seconds
-          backoffSeconds = backoffSeconds > 60 ? 60 : backoffSeconds;
+          backoffSeconds = backoffSeconds > 30 ? 30 : backoffSeconds;
 
           print(
               "Retrying... Attempt $attempt of $maxRetries. Waiting $backoffSeconds seconds");
@@ -328,7 +321,6 @@ class Downloader {
       completer.complete();
     } catch (e) {
       if (!completer.isCompleted) {
-        print("Download error: $e");
         completer.completeError(Exception("Download failed: $e"));
       }
     } finally {
@@ -373,8 +365,7 @@ class Downloader {
 
       return await file.length();
     } catch (e) {
-      print("Error handling files: $e");
-      throw e; // 重新抛出异常以触发重试
+      throw e;
     }
   }
 
