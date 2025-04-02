@@ -5,6 +5,7 @@ import 'dart:io';
 import 'package:archive/archive_io.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
+import 'package:flutter_socks_proxy/socks_proxy.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:path/path.dart' as path;
 import 'package:path_provider/path_provider.dart';
@@ -400,12 +401,32 @@ class FFMpegHelper {
     return session;
   }
 
+  Future<void> setGlobalProxy(String? proxyType, String? proxyHost,
+      String? proxyPort, String? proxyUsername, String? proxyPassword) async {
+    String proxy;
+    if (proxyUsername != null && proxyPassword != null) {
+      proxy = "$proxyType $proxyUsername:$proxyPassword@$proxyHost:$proxyPort";
+    } else if (proxyUsername != null && proxyPassword == null) {
+      proxy = "$proxyType $proxyUsername@$proxyHost:$proxyPort";
+    } else if (proxyType != null) {
+      proxy = "$proxyType $proxyHost:$proxyPort";
+    } else {
+      proxy = "DIRECT";
+    }
+
+    SocksProxy.initProxy(proxy: proxy);
+  }
+
   int times = 0;
-  Future<bool> setupFFMpegOnWindows({
-    CancelToken? cancelToken,
-    void Function(FFMpegProgress progress)? onProgress,
-    Map<String, dynamic>? queryParameters,
-  }) async {
+  Future<bool> setupFFMpegOnWindows(
+      {CancelToken? cancelToken,
+      void Function(FFMpegProgress progress)? onProgress,
+      Map<String, dynamic>? queryParameters,
+      String? proxyType,
+      String? proxyHost,
+      String? proxyPort,
+      String? proxyUsername,
+      String? proxyPassword}) async {
     if (Platform.isWindows) {
       if ((_ffmpegBinDirectory == null) || (_tempFolderPath == null)) {
         await initialize();
@@ -423,6 +444,10 @@ class FFMpegHelper {
       if (await tempZipFile.exists() == false) {
         try {
           deleteTempFiles(_tempFolderPath!);
+
+          setGlobalProxy(
+              proxyType, proxyHost, proxyPort, proxyUsername, proxyPassword);
+
           final isSuccess = await Downloader.multiThreadDownload(
             url: _ffmpegUrl,
             savePath: ffmpegZipPath,

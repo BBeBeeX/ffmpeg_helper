@@ -14,9 +14,21 @@ class Downloader {
     CancelToken? cancelToken,
   }) async {
     try {
+      final saveDir = Directory(
+          savePath.substring(0, savePath.lastIndexOf(Platform.pathSeparator)));
+      if (!await saveDir.exists()) {
+        print("Creating directory: ${saveDir.path}");
+        await saveDir.create(recursive: true);
+      }
+
+      print("Getting file size for $url");
       int fileSize = await getFileSize(url, queryParameters);
-      if (fileSize == 0) {
-        throw Exception('Unable to retrieve file size');
+
+      if (fileSize <= 0) {
+        print("Range support detected but unknown file size.");
+        return false;
+      } else {
+        print("File size determined: $fileSize bytes");
       }
 
       int chunkSize = (fileSize / threadCount).ceil();
@@ -65,9 +77,11 @@ class Downloader {
       progressReceivePort.close();
 
       if (results.contains(false)) {
-        throw Exception('Some chunks failed to download');
+        print("Some chunks failed to download");
+        return false;
       }
 
+      print("All chunks downloaded successfully, merging files");
       return await _mergeFiles(tempFiles, savePath);
     } catch (e, stackTrace) {
       print('Download failed: $e');
@@ -78,30 +92,34 @@ class Downloader {
 
   static Future<int> getFileSize(
       String url, Map<String, dynamic>? queryParameters,
-      {int maxRetries = 3,
+      {int maxRetries = 5,
       Duration retryDelay = const Duration(seconds: 2)}) async {
     Dio dio = Dio();
     int attempt = 0;
 
     while (attempt < maxRetries) {
       try {
-        Response response =
-            await dio.head(url, queryParameters: queryParameters);
-        return int.tryParse(
-                response.headers.value(HttpHeaders.contentLengthHeader) ??
-                    '0') ??
-            0;
-      } catch (e) {
-        attempt++;
-        print("Attempt $attempt: Failed to get file size: $e");
-        if (attempt >= maxRetries) {
-          throw Exception(
-              'Failed to retrieve file size after $maxRetries attempts.');
-        }
-        await Future.delayed(retryDelay);
-      }
-    }
+        print("Attempt ${attempt + 1}: Getting file size for $url");
+        Response response = await dio.head(url,
+            queryParameters: queryParameters,
+            options: Options(
+                validateStatus: (status) => status != null && status < 500));
 
+        if (response.statusCode == 200) {
+          final contentLength =
+              response.headers.value(HttpHeaders.contentLengthHeader);
+          final fileSize = int.tryParse(contentLength ?? '0') ?? 0;
+
+          return fileSize;
+        }
+      } catch (e) {
+        ;
+      }
+
+      attempt++;
+      await Future.delayed(const Duration(seconds: 5));
+    }
+    print("Failed to retrieve file size after $maxRetries attempts");
     return 0;
   }
 
@@ -148,7 +166,7 @@ class Downloader {
     DownloadChunkParams params = args[1] as DownloadChunkParams;
 
     bool success = false;
-    int maxRetries = 20;
+    int maxRetries = 30;
     int attempt = 0;
 
     // 初始文件状态检查
@@ -166,13 +184,7 @@ class Downloader {
     }
 
     while (attempt < maxRetries) {
-      Timer? timeoutTimer;
-      Completer<void> downloadCompleter = Completer<void>();
-
       try {
-        // 设置超时处理
-        timeoutTimer = _setupTimeoutTimer(downloadCompleter, params, 20);
-
         // 备份已下载内容
         await _backupExistingFile(file, backupFilePath, downloadedBytes);
 
@@ -182,23 +194,48 @@ class Downloader {
             "Downloading range: $currentStart-${params.end} (attempt ${attempt + 1}/$maxRetries)");
 
         // 开始下载新内容
-        await _downloadChunkPart(params, tempFilePath, currentStart,
-            downloadedBytes, downloadCompleter, timeoutTimer);
+        try {
+          await _downloadChunkPart(
+              params, tempFilePath, currentStart, downloadedBytes);
 
-        // 等待下载完成
-        await downloadCompleter.future;
+          // 处理文件合并
+          int newSize = await _mergeDownloadedParts(
+              file, tempFilePath, backupFilePath, downloadedBytes);
 
-        // 处理文件合并
-        int newSize = await _mergeDownloadedParts(
-            file, tempFilePath, backupFilePath, downloadedBytes);
+          // 检查下载是否完成
+          if (newSize >= totalBytes) {
+            success = true;
+            break;
+          } else {
+            print("Incomplete download: $newSize of $totalBytes bytes");
+            downloadedBytes = newSize;
+          }
+        } catch (e) {
+          print("Download chunk part failed: $e");
 
-        // 检查下载是否完成
-        if (newSize >= totalBytes) {
-          success = true;
-          break;
-        } else {
-          print("Incomplete download: $newSize of $totalBytes bytes");
-          downloadedBytes = newSize;
+          // Check for specific errors that might indicate temporary network issues
+          String errorMsg = e.toString().toLowerCase();
+          bool isNetworkError = errorMsg.contains('socket') ||
+              errorMsg.contains('connection') ||
+              errorMsg.contains('network') ||
+              errorMsg.contains('timeout') ||
+              errorMsg.contains('stalled');
+
+          if (isNetworkError) {
+            print("Network error detected, will retry");
+            throw e; // Rethrow to be caught by the outer try-catch
+          } else {
+            // For non-network errors, check if we made any progress
+            File tempFile = File(tempFilePath);
+            if (await tempFile.exists() && await tempFile.length() > 0) {
+              print("Download partially completed before error, will continue");
+              throw e; // Rethrow to be caught by the outer try-catch
+            } else {
+              // More serious error with no progress, consider a longer backoff
+              print("Serious error with no progress: $e");
+              throw e; // Rethrow with indication this is more serious
+            }
+          }
         }
       } catch (e) {
         attempt++;
@@ -211,11 +248,29 @@ class Downloader {
           print("Max retries reached for range ${params.start}-${params.end}");
           break;
         } else {
-          print("Retrying... Attempt $attempt of $maxRetries");
-          await Future.delayed(Duration(seconds: 1));
+          // Dynamic backoff based on attempt number and error type
+          String errorMsg = e.toString().toLowerCase();
+          bool isNetworkTimeout =
+              errorMsg.contains('timeout') || errorMsg.contains('stalled');
+
+          // Network timeouts get longer backoffs
+          int backoffSeconds = isNetworkTimeout
+              ? (attempt < 5 ? attempt * 2 : 10 + (attempt ~/ 2))
+              : (attempt < 5 ? attempt : 5 + (attempt ~/ 5));
+
+          // Cap the maximum backoff at 60 seconds
+          backoffSeconds = backoffSeconds > 60 ? 60 : backoffSeconds;
+
+          print(
+              "Retrying... Attempt $attempt of $maxRetries. Waiting $backoffSeconds seconds");
+          await Future.delayed(Duration(seconds: backoffSeconds));
+
+          // For persistent timeouts, let's try validating the connection
+          if (isNetworkTimeout && attempt % 5 == 0) {
+            await Future.delayed(Duration(seconds: 10)); // Longer pause
+          }
         }
       } finally {
-        timeoutTimer?.cancel();
         await _cleanupFile(tempFilePath);
       }
     }
@@ -227,72 +282,64 @@ class Downloader {
     Isolate.exit(sendPort, success);
   }
 
-// 设置超时定时器
-  static Timer _setupTimeoutTimer(
-      Completer<void> completer, DownloadChunkParams params, int seconds) {
-    return Timer(Duration(seconds: seconds), () {
-      if (!completer.isCompleted) {
-        completer.completeError(TimeoutException(
-            "Download stalled for range ${params.start}-${params.end}, retrying..."));
-      }
-    });
-  }
-
-// 备份已存在的文件
-  static Future<void> _backupExistingFile(
-      File file, String backupPath, int downloadedBytes) async {
-    if (downloadedBytes <= 0) return;
-
-    try {
-      await file.copy(backupPath);
-      print("Backed up partially downloaded file: $backupPath");
-    } catch (e) {
-      print("Failed to backup file: $e");
-    }
-  }
-
-// 下载新的分片部分
   static Future<void> _downloadChunkPart(
-      DownloadChunkParams params,
-      String tempFilePath,
-      int currentStart,
-      int downloadedBytes,
-      Completer<void> completer,
-      Timer? timer) async {
+    DownloadChunkParams params,
+    String tempFilePath,
+    int currentStart,
+    int downloadedBytes,
+  ) async {
     Dio dio = Dio();
+    final completer = Completer<void>();
+    final cancelToken = CancelToken();
+    int currentReceivedBytes = downloadedBytes;
 
     try {
-      await dio.download(
+      final response = await dio.download(
         params.url,
         tempFilePath,
+        queryParameters: params.queryParameters,
         options: Options(
           headers: {"Range": "bytes=$currentStart-${params.end}"},
+          receiveTimeout: const Duration(seconds: 30),
+          sendTimeout: const Duration(seconds: 30),
+          // contentType: 'application/octet-stream',
         ),
+        cancelToken: cancelToken,
         onReceiveProgress: (received, total) {
-          // 重置超时定时器
-          timer?.cancel();
-          timer = _setupTimeoutTimer(completer, params, 20);
-
-          // 发送进度更新
+          currentReceivedBytes = downloadedBytes + received;
           params.progressPort.send({
             'type': 'progress',
             'index': params.index,
-            'received': downloadedBytes + received,
+            'received': currentReceivedBytes,
           });
         },
-      ).then((_) {
-        if (!completer.isCompleted) completer.complete();
-      }).catchError((error) {
-        if (!completer.isCompleted) completer.completeError(error);
-      });
+      );
+
+      File tempFile = File(tempFilePath);
+      if (await tempFile.exists()) {
+        int fileSize = await tempFile.length();
+        if (fileSize == 0) {
+          throw Exception("Downloaded file is empty: $tempFilePath");
+        }
+      } else {
+        throw Exception("Download completed but file not found: $tempFilePath");
+      }
+
+      completer.complete();
+    } catch (e) {
+      if (!completer.isCompleted) {
+        print("Download error: $e");
+        completer.completeError(Exception("Download failed: $e"));
+      }
     } finally {
-      dio.close();
+      try {
+        dio.close(force: true);
+      } catch (_) {}
     }
 
-    return;
+    return completer.future;
   }
 
-// 合并下载的文件部分
   static Future<int> _mergeDownloadedParts(File file, String tempPath,
       String backupPath, int downloadedBytes) async {
     File tempFile = File(tempPath);
@@ -331,7 +378,6 @@ class Downloader {
     }
   }
 
-// 恢复备份
   static Future<void> _restoreBackup(File file, String backupPath) async {
     File backupFile = File(backupPath);
     if (!await backupFile.exists()) return;
@@ -352,7 +398,6 @@ class Downloader {
     }
   }
 
-// 清理临时文件，带重试
   static Future<void> _cleanupFile(String filePath) async {
     try {
       File file = File(filePath);
@@ -374,6 +419,18 @@ class Downloader {
       print("Unable to delete $filePath file: $filePath");
     } catch (e) {
       print("Failed to clean up $filePath file: $e");
+    }
+  }
+
+  static Future<void> _backupExistingFile(
+      File file, String backupPath, int downloadedBytes) async {
+    if (downloadedBytes <= 0) return;
+
+    try {
+      await file.copy(backupPath);
+      print("Backed up partially downloaded file: $backupPath");
+    } catch (e) {
+      print("Failed to backup file: $e");
     }
   }
 }
