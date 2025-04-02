@@ -404,11 +404,16 @@ class FFMpegHelper {
   Future<void> setGlobalProxy(String? proxyType, String? proxyHost,
       String? proxyPort, String? proxyUsername, String? proxyPassword) async {
     String proxy;
-    if (proxyUsername != null && proxyPassword != null) {
+    if (proxyUsername != null &&
+        proxyUsername.isNotEmpty &&
+        proxyPassword != null &&
+        proxyPassword.isNotEmpty) {
       proxy = "$proxyType $proxyUsername:$proxyPassword@$proxyHost:$proxyPort";
-    } else if (proxyUsername != null && proxyPassword == null) {
+    } else if (proxyUsername != null &&
+        proxyUsername.isNotEmpty &&
+        proxyPassword == null) {
       proxy = "$proxyType $proxyUsername@$proxyHost:$proxyPort";
-    } else if (proxyType != null) {
+    } else if (proxyType != null && proxyType.isNotEmpty) {
       proxy = "$proxyType $proxyHost:$proxyPort";
     } else {
       proxy = "DIRECT";
