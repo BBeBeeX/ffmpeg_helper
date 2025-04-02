@@ -216,12 +216,12 @@ class Downloader {
         }
       } finally {
         timeoutTimer?.cancel();
-        await _cleanupTempFile(tempFilePath);
+        await _cleanupFile(tempFilePath);
       }
     }
 
     // 最终清理
-    await _cleanupBackupFile(backupFilePath);
+    await _cleanupFile(backupFilePath);
 
     sendPort.send(success);
     Isolate.exit(sendPort, success);
@@ -353,7 +353,7 @@ class Downloader {
   }
 
 // 清理临时文件，带重试
-  static Future<void> _cleanupTempFile(String filePath) async {
+  static Future<void> _cleanupFile(String filePath) async {
     try {
       File file = File(filePath);
       if (!await file.exists()) return;
@@ -363,42 +363,17 @@ class Downloader {
       for (int i = 0; i < 3; i++) {
         try {
           await file.delete();
-          print("Successfully deleted temp file");
+          print("Successfully deleted $filePath file");
           return;
         } catch (e) {
-          print("Delete temp file attempt ${i + 1} failed: $e");
+          print("Delete file $filePath attempt ${i + 1} failed: $e");
           await Future.delayed(Duration(seconds: 1));
         }
       }
 
-      print("Unable to delete temp file: $filePath");
+      print("Unable to delete $filePath file: $filePath");
     } catch (e) {
-      print("Failed to clean up temp file: $e");
-    }
-  }
-
-// 清理备份文件，带重试
-  static Future<void> _cleanupBackupFile(String filePath) async {
-    try {
-      File file = File(filePath);
-      if (!await file.exists()) return;
-
-      await Future.delayed(Duration(milliseconds: 500));
-
-      for (int i = 0; i < 3; i++) {
-        try {
-          await file.delete();
-          print("Successfully deleted backup file");
-          return;
-        } catch (e) {
-          print("Delete backup file attempt ${i + 1} failed: $e");
-          await Future.delayed(Duration(seconds: 1));
-        }
-      }
-
-      print("Unable to delete backup file: $filePath");
-    } catch (e) {
-      print("Failed to clean up backup file: $e");
+      print("Failed to clean up $filePath file: $e");
     }
   }
 }
